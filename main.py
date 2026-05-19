@@ -131,7 +131,7 @@ def clean_data(raw_data):
     admission_date = parse_date(cleaned.get("入院日期"))
     discharge_date = parse_date(cleaned.get("出院日期"))
     if admission_date and discharge_date and discharge_date < admission_date:
-        print(f"\n⚠️  警告：检测到出院日期({cleaned['出院日期']})早于入院日期({cleaned['入院日期']})，已自动置为未提取到")
+        print(f"\n 警告：检测到出院日期({cleaned['出院日期']})早于入院日期({cleaned['入院日期']})，已自动置为未提取到")
         cleaned["出院日期"] = None
 
     return cleaned
