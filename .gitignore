@@ -37,3 +37,6 @@ env/
 log/
 *.log
 *.sqlite3
+
+# 示例病历文件夹
+samples/
