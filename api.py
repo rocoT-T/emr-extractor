@@ -7,6 +7,12 @@ import os
 import tempfile
 
 # --------------------------
+# 全局配置开关（开发/生产环境切换）
+# --------------------------
+DEBUG = True  # 开发阶段设为True，显示详细错误；上线前改为False
+
+
+# --------------------------
 # 复制 main.py 里的所有函数过来
 # --------------------------
 def read_docx(file_path, verbose=False):
@@ -18,20 +24,63 @@ def read_docx(file_path, verbose=False):
             full_text.append(text)
     for table in doc.tables:
         for row in table.rows:
-            row_cells = [cell.text.strip() for cell in row.cells]
+            # ✅ 修改点1：过滤掉全空的单元格，避免生成连续的制表符
+            # 原代码：row_cells = [cell.text.strip() for cell in row.cells]
+            # 问题：空单元格strip()后是空串，join会产生"\t\t\t"这样的垃圾数据
+            row_cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
             row_str = "\t".join(row_cells)
-            full_text.append(row_str)
+            # 只有当行不为空时才加入全文，避免空行
+            if row_str:
+                full_text.append(row_str)
     return "\n".join(full_text), doc
 
-def parse_date(date_str):
+def normalize_date_str(date_str):
+    """
+    日期字符串标准化预处理
+    将所有格式统一为 YYYY-MM-DD 格式，自动补全前导零
+    支持：2025-5-19、2025/5/19、2025.5.19、2025年5月19日
+    """
     if not date_str:
         return None
-    formats = ["%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y年%m月%d日"]
+    
+    # 统一所有分隔符为横杠
+    normalized = re.sub(r'[/.年]', '-', date_str)
+    # 移除"月"和"日"字
+    normalized = normalized.replace('月', '-').replace('日', '')
+    
+    # 拆分年月日并补零
+    parts = normalized.split('-')
+    if len(parts) == 3:
+        year, month, day = parts
+        # 月份补零
+        if len(month) == 1:
+            month = '0' + month
+        # 日期补零
+        if len(day) == 1:
+            day = '0' + day
+        return f"{year}-{month}-{day}"
+    
+    return date_str
+
+def parse_date(date_str):
+    """
+    智能解析日期字符串，支持多种格式
+    返回datetime对象，解析失败返回None
+    """
+    if not date_str:
+        return None
+    
+    # 先标准化日期字符串
+    normalized_date = normalize_date_str(date_str)
+    
+    # 只需要保留标准格式即可
+    formats = ["%Y-%m-%d"]
     for fmt in formats:
         try:
-            return datetime.strptime(date_str, fmt)
+            return datetime.strptime(normalized_date, fmt)
         except ValueError:
             continue
+    
     return None
 
 def extract_from_tables(doc):
@@ -121,18 +170,15 @@ def extract_patient_info(full_text, doc):
 # --------------------------
 # FastAPI 应用
 # --------------------------
-
-# 创建FastAPI应用实例
-# title是API的名称，会显示在自动生成的文档
 app = FastAPI(title="电子病历信息提取器API", version="0.2.0")
-# 定义根路径的GET接口
-# @app.get("/") 是装饰器，表示这个函数处理 GET 请求，路径是 "/"
+
 @app.get("/")
 def root():
     return {
         "message": "EMR Extractor API is running",
         "version": "0.2.0",
-        "status": "success"
+        "status": "success",
+        "debug_mode": DEBUG
     }
 
 @app.post("/extract", summary="提取病历信息")
@@ -163,7 +209,13 @@ async def extract_emr(file: UploadFile = File(..., description="上传Word格式
         }
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": f"处理失败：{str(e)}"})
+        # ✅ 修改点3：增加DEBUG开关，控制错误信息暴露程度
+        if DEBUG:
+            # 开发阶段：返回详细错误信息，方便调试
+            return JSONResponse(status_code=500, content={"error": f"处理失败：{str(e)}"})
+        else:
+            # 生产阶段：只返回通用错误，避免泄露敏感信息
+            return JSONResponse(status_code=500, content={"error": "服务器内部错误，请稍后重试"})
 
     finally:
         # 5. 删除临时文件
