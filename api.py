@@ -121,8 +121,12 @@ def extract_patient_info(full_text, doc):
 # --------------------------
 # FastAPI 应用
 # --------------------------
-app = FastAPI(title="电子病历信息提取器API", version="0.2.0")
 
+# 创建FastAPI应用实例
+# title是API的名称，会显示在自动生成的文档
+app = FastAPI(title="电子病历信息提取器API", version="0.2.0")
+# 定义根路径的GET接口
+# @app.get("/") 是装饰器，表示这个函数处理 GET 请求，路径是 "/"
 @app.get("/")
 def root():
     return {
