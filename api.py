@@ -3,17 +3,91 @@ from fastapi.responses import JSONResponse
 from docx import Document
 import re
 from datetime import datetime
+from sqlalchemy import create_engine, Column, Integer, String, Date, Text, DateTime
+from sqlalchemy.orm import declarative_base, sessionmaker
 import os
 import tempfile
+
+
+from dotenv import load_dotenv
+load_dotenv()   # 放在所有配置之前，这样后面 os.getenv 就能读到 .env 里的值
 
 # --------------------------
 # 全局配置开关（开发/生产环境切换）
 # --------------------------
-DEBUG = True  # 开发阶段设为True，显示详细错误；上线前改为False
-
+DEBUG = os.getenv("DEBUG", "False").lower() == "true"  # 开发阶段设为True，显示详细错误；上线前改为False
 
 # --------------------------
-# 复制 main.py 里的所有函数过来
+# 数据库配置
+# --------------------------
+# 从环境变量读取数据库连接地址
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# 如果环境变量没设置，给一个默认值（方便本地开发）
+# if not DATABASE_URL:
+#     DATABASE_URL = "mysql+pymysql://root:你的密码@localhost:3306/emr_db?charset=utf8mb4"
+
+# 创建数据库引擎（echo=True 会打印 SQL 语句，调试时有用）
+engine = create_engine(DATABASE_URL, echo=True if DEBUG else False)
+
+# 会话工厂
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# 模型基类
+Base = declarative_base()
+
+# 定义数据库表模型（对应你建的 emr_records 表）
+class EMRRecord(Base):
+    __tablename__ = "emr_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    patient_name = Column(String(50))
+    gender = Column(String(10))
+    age = Column(Integer)
+    hospital_id = Column(String(50))
+    department = Column(String(50))
+    bed_number = Column(String(20))
+    admission_date = Column(Date)
+    discharge_date = Column(Date)
+    diagnosis = Column(Text)
+    medical_order = Column(Text)
+    filename = Column(String(255))
+    created_at = Column(DateTime, default=datetime.now)
+
+# 创建所有表（如果表已存在则跳过）
+Base.metadata.create_all(bind=engine)
+
+# 保存到数据库的函数
+def save_to_db(patient_info: dict, filename: str):
+    """将提取的患者信息保存到数据库，返回新记录的 ID"""
+    db = SessionLocal()
+    try:
+        # 映射中文字段名到数据库列名
+        record = EMRRecord(
+            patient_name=patient_info.get("姓名"),
+            gender=patient_info.get("性别"),
+            age=patient_info.get("年龄"),
+            hospital_id=patient_info.get("住院号"),
+            department=patient_info.get("科室"),
+            bed_number=patient_info.get("床号"),
+            admission_date=parse_date(patient_info.get("入院日期")),  # 转为 datetime 对象
+            discharge_date=parse_date(patient_info.get("出院日期")),
+            diagnosis=patient_info.get("诊断"),
+            medical_order=patient_info.get("医嘱"),
+            filename=filename
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)  # 获取数据库自动生成的 id
+        return record.id
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
+# --------------------------
+# (api初期)复制 main.py 里的所有函数过来
 # --------------------------
 def read_docx(file_path, verbose=False):
     doc = Document(file_path)
@@ -24,7 +98,7 @@ def read_docx(file_path, verbose=False):
             full_text.append(text)
     for table in doc.tables:
         for row in table.rows:
-            # ✅ 修改点1：过滤掉全空的单元格，避免生成连续的制表符
+            # 过滤掉全空的单元格，避免生成连续的制表符
             # 原代码：row_cells = [cell.text.strip() for cell in row.cells]
             # 问题：空单元格strip()后是空串，join会产生"\t\t\t"这样的垃圾数据
             row_cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
@@ -170,13 +244,13 @@ def extract_patient_info(full_text, doc):
 # --------------------------
 # FastAPI 应用
 # --------------------------
-app = FastAPI(title="电子病历信息提取器API", version="0.2.0")
+app = FastAPI(title="电子病历信息提取器API", version="0.2.1")
 
 @app.get("/")
 def root():
     return {
         "message": "EMR Extractor API is running",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "status": "success",
         "debug_mode": DEBUG
     }
@@ -197,7 +271,16 @@ async def extract_emr(file: UploadFile = File(..., description="上传Word格式
         full_content, doc = read_docx(tmp_path)
         patient_info = extract_patient_info(full_content, doc)
 
-        # 4. 结果整理
+        # 4. 保存到数据库
+        try:
+            record_id = save_to_db(patient_info, file.filename)
+        except Exception as db_error:
+            # 数据库保存失败，不影响接口返回，但会记录日志
+            print(f"数据库保存失败: {db_error}")
+            record_id = None
+
+
+        # 5. 结果整理
         result = {}
         for k, v in patient_info.items():
             result[k] = v if v is not None else "未提取到"
@@ -205,11 +288,12 @@ async def extract_emr(file: UploadFile = File(..., description="上传Word格式
         return {
             "filename": file.filename,
             "status": "success",
+            "record_id": record_id,
             "data": result
         }
 
     except Exception as e:
-        # ✅ 修改点3：增加DEBUG开关，控制错误信息暴露程度
+        # 增加DEBUG开关，控制错误信息暴露程度
         if DEBUG:
             # 开发阶段：返回详细错误信息，方便调试
             return JSONResponse(status_code=500, content={"error": f"处理失败：{str(e)}"})
