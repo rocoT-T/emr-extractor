@@ -1,3 +1,4 @@
+"""Generate synthetic EMR .docx files and BIO-annotated training data for NER model fine-tuning."""
 import random
 import os
 import json

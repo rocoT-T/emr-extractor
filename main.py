@@ -1,3 +1,4 @@
+"""CLI tool: extract structured patient info from EMR .docx files, with batch processing to Excel."""
 from docx import Document
 import re
 from datetime import datetime

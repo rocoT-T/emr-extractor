@@ -1,3 +1,4 @@
+"""FastAPI service: extract structured patient data from EMR .docx files and persist to MySQL."""
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from docx import Document
